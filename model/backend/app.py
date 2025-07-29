@@ -20,7 +20,7 @@ app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Or specify ["http://localhost:3000"]
+    allow_origins=["*"],  
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -44,7 +44,7 @@ zone_coords = None  # No zone by default
 
 person_zone_times = {}  # track_id: entry_time
 loitering_alerts = []   # [{track_id, entry_time, duration}]
-intrusion_alerts = []   # [{track_id, entry_time}]
+intrusion_alerts = []  
 
 # Heatmap tracking
 heatmap = None
