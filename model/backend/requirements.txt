@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+sqlalchemy
+pydantic
+ultralytics
+opencv-python
+pillow 
+deep_sort_realtime 
