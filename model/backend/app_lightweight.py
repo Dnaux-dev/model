@@ -32,6 +32,29 @@ detector = YoloV8Detector()
 
 # Video source
 VIDEO_SOURCE = "scene 2.mp4"
+# Flag to indicate that the capture should be reopened with the (possibly) new VIDEO_SOURCE
+REOPEN_VIDEO_SOURCE = False
+
+@app.post("/set_source")
+async def set_source(request: Request):
+    """Switch the backend video source between webcam and a file at runtime."""
+    global VIDEO_SOURCE, REOPEN_VIDEO_SOURCE
+    data = await request.json()
+    source = data.get("source")
+
+    if source == "webcam":
+        VIDEO_SOURCE = 0
+        REOPEN_VIDEO_SOURCE = True
+        return {"status": "ok", "source": "webcam"}
+    elif source == "file":
+        path = data.get("path", "scene 2.mp4")
+        if not os.path.exists(path):
+            return {"status": "error", "message": f"file not found: {path}"}
+        VIDEO_SOURCE = path
+        REOPEN_VIDEO_SOURCE = True
+        return {"status": "ok", "source": "file", "path": path}
+    else:
+        return {"status": "error", "message": "invalid source. use 'webcam' or 'file'"}
 
 @app.post("/set_zone")
 async def set_zone(request: Request):
@@ -272,7 +295,7 @@ DETECTION_INTERVAL = 0.2  # Run detection every 200ms (was 500ms)
 VIDEO_FPS = 8  # Very low FPS for performance
 
 def video_capture_thread():
-    global latest_frame, latest_detections, latest_faces, frame_count, person_zone_times, loitering_alerts, intrusion_alerts
+    global latest_frame, latest_detections, latest_faces, frame_count, person_zone_times, loitering_alerts, intrusion_alerts, REOPEN_VIDEO_SOURCE, VIDEO_SOURCE
     cap = cv2.VideoCapture(VIDEO_SOURCE)
     
     if not cap.isOpened():
@@ -284,10 +307,24 @@ def video_capture_thread():
     last_detection_time = 0
     
     while True:
+        # Handle runtime source switch
+        if REOPEN_VIDEO_SOURCE:
+            try:
+                cap.release()
+            except Exception:
+                pass
+            cap = cv2.VideoCapture(VIDEO_SOURCE)
+            if not cap.isOpened():
+                print(f"Error: Could not open video source after switch: {VIDEO_SOURCE}")
+                time.sleep(1)
+                continue
+            REOPEN_VIDEO_SOURCE = False
+
         ret, frame = cap.read()
-        if not ret:
-            print("End of video or error reading frame")
-            break
+        if not ret or frame is None:
+            print("Failed to read frame")
+            time.sleep(0.05)
+            continue
         
         frame_count += 1
         current_time = time.time()
