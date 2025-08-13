@@ -25,37 +25,79 @@ function VideoFeed() {
   // Poll alerts
   useEffect(() => {
     const fetchAlerts = async () => {
-      const loiterRes = await fetch('http://localhost:8000/loitering_alerts');
-      const intrusionRes = await fetch('http://localhost:8000/intrusion_alerts');
-      const loiterData = await loiterRes.json();
-      const intrusionData = await intrusionRes.json();
-      let allAlerts = [];
-      if (loiterData.loitering_alerts) {
-        allAlerts = allAlerts.concat(
-          loiterData.loitering_alerts.map(a => ({
-            type: 'loitering',
-            id: a.track_id,
-            time: new Date(a.entry_time * 1000).toLocaleTimeString(),
-            duration: a.duration ? a.duration.toFixed(1) : null
-          }))
-        );
+      try {
+        const loiterRes = await fetch('http://localhost:8000/loitering_alerts');
+        const intrusionRes = await fetch('http://localhost:8000/intrusion_alerts');
+        const theftRes = await fetch('http://localhost:8000/theft_alerts');
+        const suspiciousRes = await fetch('http://localhost:8000/suspicious_behavior');
+        
+        const loiterData = await loiterRes.json();
+        const intrusionData = await intrusionRes.json();
+        const theftData = await theftRes.json();
+        const suspiciousData = await suspiciousRes.json();
+        
+        let allAlerts = [];
+        
+        // Loitering alerts
+        if (loiterData.loitering_alerts) {
+          allAlerts = allAlerts.concat(
+            loiterData.loitering_alerts.map(a => ({
+              type: 'loitering',
+              id: a.track_id,
+              time: new Date(a.entry_time * 1000).toLocaleTimeString(),
+              duration: a.duration ? a.duration.toFixed(1) : null
+            }))
+          );
+        }
+        
+        // Intrusion alerts
+        if (intrusionData.intrusion_alerts) {
+          allAlerts = allAlerts.concat(
+            intrusionData.intrusion_alerts.map(a => ({
+              type: 'intrusion',
+              id: a.track_id,
+              time: new Date(a.entry_time * 1000).toLocaleTimeString()
+            }))
+          );
+        }
+        
+        // Theft alerts
+        if (theftData.theft_alerts) {
+          allAlerts = allAlerts.concat(
+            theftData.theft_alerts.map(a => ({
+              type: 'theft',
+              id: a.object_id,
+              time: new Date(a.timestamp * 1000).toLocaleTimeString(),
+              details: a.details,
+              owner: a.owner_id
+            }))
+          );
+        }
+        
+        // Suspicious behavior alerts
+        if (suspiciousData.suspicious_behavior) {
+          allAlerts = allAlerts.concat(
+            suspiciousData.suspicious_behavior.map(a => ({
+              type: 'suspicious',
+              id: a.person_id,
+              time: new Date(a.timestamp * 1000).toLocaleTimeString(),
+              details: a.details,
+              behavior: a.behavior_type
+            }))
+          );
+        }
+        
+        // Sort by time descending
+        allAlerts.sort((a, b) => b.time.localeCompare(a.time));
+        setAlerts(allAlerts);
+        setLatestAlert(allAlerts[0] || null);
+      } catch (error) {
+        console.log('Backend not ready yet:', error.message);
+        // Don't show errors in console, just wait for backend
       }
-      if (intrusionData.intrusion_alerts) {
-        allAlerts = allAlerts.concat(
-          intrusionData.intrusion_alerts.map(a => ({
-            type: 'intrusion',
-            id: a.track_id,
-            time: new Date(a.entry_time * 1000).toLocaleTimeString()
-          }))
-        );
-      }
-      // Sort by time descending
-      allAlerts.sort((a, b) => b.time.localeCompare(a.time));
-      setAlerts(allAlerts);
-      setLatestAlert(allAlerts[0] || null);
     };
     fetchAlerts();
-    const interval = setInterval(fetchAlerts, 1000);
+    const interval = setInterval(fetchAlerts, 2000); // Reduced frequency
     return () => clearInterval(interval);
   }, []);
 
@@ -223,7 +265,10 @@ function VideoFeed() {
             top: 24,
             left: '50%',
             transform: 'translateX(-50%)',
-            bgcolor: latestAlert.type === 'intrusion' ? 'error.main' : 'warning.main',
+            bgcolor: latestAlert.type === 'intrusion' ? 'error.main' : 
+                     latestAlert.type === 'theft' ? 'error.dark' :
+                     latestAlert.type === 'suspicious' ? 'warning.dark' :
+                     'warning.main',
             color: 'white',
             px: 4,
             py: 2,
@@ -234,16 +279,24 @@ function VideoFeed() {
           }}
         >
           <Typography variant="h5" fontWeight="bold">
-            {latestAlert.type === 'intrusion'
-              ? `ZONE INTRUSION ALERT!`
-              : `LOITERING DETECTED!`}
+            {latestAlert.type === 'intrusion' ? `ZONE INTRUSION ALERT!` :
+             latestAlert.type === 'theft' ? `THEFT DETECTED!` :
+             latestAlert.type === 'suspicious' ? `SUSPICIOUS BEHAVIOR!` :
+             `LOITERING DETECTED!`}
           </Typography>
           <Typography>
-            Person ID: {latestAlert.id}
+            {latestAlert.type === 'theft' ? `Object: ${latestAlert.id}` :
+             latestAlert.type === 'suspicious' ? `Person: ${latestAlert.id}` :
+             `Person ID: ${latestAlert.id}`}
             {latestAlert.type === 'loitering' && latestAlert.duration
               ? ` (Duration: ${latestAlert.duration}s)`
               : ''}
           </Typography>
+          {latestAlert.details && (
+            <Typography variant="body2" sx={{ mt: 1 }}>
+              {latestAlert.details}
+            </Typography>
+          )}
           <Typography variant="caption">{latestAlert.time}</Typography>
         </Paper>
       )}
