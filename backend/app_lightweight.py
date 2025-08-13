@@ -16,7 +16,7 @@ try:
     MONGODB_AVAILABLE = True
 except ImportError:
     MONGODB_AVAILABLE = False
-    print("MongoDB not available - alerts will be stored in memory only")
+    print("MongoDB not available - alerts will be stored in memor only")
 
 app = FastAPI()
 
