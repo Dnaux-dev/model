@@ -1,3 +1,32 @@
+// Fetch theft alerts from backend
+export async function fetchTheftAlerts(limit = 50) {
+    const res = await fetch(`http://localhost:8000/mongo/alerts?alert_type=theft&limit=${limit}`);
+    if (res.ok) {
+        const data = await res.json();
+        return data || [];
+    }
+    return [];
+}
+
+// setZone for loitering and intrusion
+export async function setZone(x1, y1, x2, y2) {
+  const res = await fetch('http://localhost:8000/set_zone', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ x1, y1, x2, y2 }),
+  });
+  return await res.json();
+}
+
+// Fetch loitering snapshots from backend
+export async function fetchLoiteringSnapshots(limit = 50) {
+    const res = await fetch(`http://localhost:8000/mongo/snapshots?limit=${limit}`);
+    if (res.ok) {
+        const data = await res.json();
+        return data.snapshots || [];
+    }
+    return [];
+}
 import { useNotificationStore } from '../store/notification-store';
 
 class BackendIntegrationService {

@@ -127,10 +127,204 @@ HEATMAP_DECAY = 0.95  # Lower = faster fade
 HEATMAP_ALPHA = 0.5   # Higher = stronger overlay
 ```
 
+## Facial Recognition
+
+- **Register a New Face**
+  ```
+  POST /register_face
+  Content-Type: multipart/form-data
+  Body:
+    name: (string) Name of the person
+    file: (file) Image file containing the face
+  ```
+  - Registers a new face in the database.
+  - **Response:**
+    ```json
+    { "status": "success", "message": "Face for John Doe registered." }
+    ```
+
 ### Loitering Threshold
 ```python
 LOITER_THRESHOLD = 30  # seconds before loitering alert
 ```
+
+# 📡 OBEX Security Backend API Documentation
+
+This backend provides all AI-powered security analytics and video processing for the OBEX dashboard.  
+**The frontend displays the video stream (via WebRTC) and fetches all analytics and alerts via these endpoints.**
+
+---
+
+## Video Streaming
+
+- **Processed Video Stream (MJPEG):**
+  ```
+  GET /video_feed
+  ```
+  - Returns: MJPEG HTTP stream (for preview/testing, not for direct browser playback).
+  - Use with FFmpeg to convert to RTSP, then to WebRTC for frontend display.
+
+---
+
+## Zone Management
+
+- **Set Monitoring Zone**
+  ```
+  POST /set_zone
+  Content-Type: application/json
+  {
+    "x1": 100, "y1": 100, "x2": 400, "y2": 400
+  }
+  ```
+  - Sets the coordinates for the restricted/monitored area.
+  - **Response:**
+    ```json
+    { "status": "success", "zone": [100, 100, 400, 400] }
+    ```
+
+---
+
+## Source Management
+
+- **Set Video Source (file, webcam, or RTSP)**
+  ```
+  POST /set_source
+  Content-Type: application/json
+  {
+    "source": "file", "path": "rtsp://username:password@camera_ip:554/stream"
+  }
+  ```
+  - Switches the backend to a new video source.
+  - **Response:**
+    ```json
+    { "status": "success", "source": "rtsp://username:password@camera_ip:554/stream" }
+    ```
+
+---
+
+## Alerts & Analytics
+
+- **Get Loitering Alerts**
+  ```
+  GET /loitering_alerts
+  ```
+  - **Response:**
+    ```json
+    [
+      {
+        "track_id": 12,
+        "entry_time": 1724090000.0,
+        "duration": 45.2,
+        "snapshot_path": "loitering_snapshots/track12_20240819_153000.jpg",
+        "threat_level": "HIGH"
+      }
+    ]
+    ```
+
+- **Get Intrusion Alerts**
+  ```
+  GET /intrusion_alerts
+  ```
+  - **Response:**
+    ```json
+    [
+      {
+        "track_id": 7,
+        "entry_time": 1724090100.0,
+        "threat_level": "MEDIUM"
+      }
+    ]
+    ```
+
+- **Get Theft/Suspicious Behavior Alerts**
+  ```
+  GET /theft_alerts
+  ```
+  - **Response:**
+    ```json
+    [
+      {
+        "track_id": 5,
+        "event_time": 1724090200.0,
+        "description": "Object removed from vault",
+        "threat_level": "HIGH"
+      }
+    ]
+    ```
+
+- **Get All Alerts (if using MongoDB)**
+  ```
+  GET /mongo/alerts
+  ```
+  - **Response:**  
+    List of all alerts (loitering, intrusion, theft, etc.) from the database.
+
+---
+
+## Snapshots
+
+- **Get Loitering Snapshots**
+  ```
+  GET /loitering_snapshots
+  ```
+  - **Response:**  
+    List of snapshot file paths or URLs.
+
+---
+
+## Threat Level Notification
+
+- **Frontend Logic:**  
+  When fetching alerts, check if any alert has `"threat_level": "HIGH"`.  
+  If so, trigger a notification in the dashboard UI.
+
+  **Example (pseudo-code):**
+  ```javascript
+  fetch('/loitering_alerts')
+    .then(res => res.json())
+    .then(alerts => {
+      alerts.forEach(alert => {
+        if (alert.threat_level === "HIGH") {
+          showNotification("High threat detected!", alert);
+        }
+      });
+    });
+  ```
+
+---
+
+## How to Connect Endpoints to the Video Stream
+
+- The video stream is displayed via WebRTC (from your Go server).
+- The frontend polls or uses websockets to fetch alerts from the backend (e.g., every 2 seconds).
+- When an alert is received, the dashboard can highlight the video, show a popup, or display the relevant snapshot.
+
+---
+
+## Testing with Postman
+
+- Use the above endpoints and example payloads to test in Postman.
+- Check responses and verify that alerts and snapshots are being generated as expected.
+
+---
+
+## Summary Table
+
+| Endpoint              | Method | Description                                 |
+|-----------------------|--------|---------------------------------------------|
+| /video_feed           | GET    | MJPEG stream (for FFmpeg input)             |
+| /set_zone             | POST   | Set monitored zone                          |
+| /set_source           | POST   | Set video/RTSP source                       |
+| /register_face        | POST   | Register a new face (facial recognition)    |
+| /loitering_alerts     | GET    | Get loitering alerts                        |
+| /intrusion_alerts     | GET    | Get intrusion alerts                        |
+| /theft_alerts         | GET    | Get theft/suspicious alerts                 |
+| /mongo/alerts         | GET    | Get all alerts from MongoDB                 |
+| /loitering_snapshots  | GET    | Get loitering snapshot paths                |
+
+---
+
+**For any questions or integration help, contact
 
 ## 📁 Project Structure
 

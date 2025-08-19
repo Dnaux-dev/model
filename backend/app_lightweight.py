@@ -1,14 +1,16 @@
+# Endpoint to get loitering snapshots from MongoDB
+from fastapi import Query
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, Response
-from detection.detector import YoloV8Detector
-import threading
-import time
+from ultralytics import YOLO  # <-- NEW: Use Ultralytics YOLO
+from datetime import datetime
+import os
 import cv2
 import numpy as np
+import threading
+import time
 import face_recognition
-import os
-from datetime import datetime
 
 # MongoDB integration (optional - will work without MongoDB)
 try:
@@ -16,7 +18,15 @@ try:
     MONGODB_AVAILABLE = True
 except ImportError:
     MONGODB_AVAILABLE = False
-    print("MongoDB not available - alerts will be stored in memor only")
+    print("MongoDB not available - alerts will be stored in memory only")
+
+# Load known faces from MongoDB
+known_face_encodings = []
+known_face_names = []
+if MONGODB_AVAILABLE:
+    for face in mongo_manager.get_known_faces():
+        known_face_encodings.append(np.array(face["encoding"]))
+        known_face_names.append(face["name"])
 
 app = FastAPI()
 
@@ -28,10 +38,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-detector = YoloV8Detector()
+# --- NEW: Initialize Ultralytics YOLO model ---
+yolo_model = YOLO('yolov8n.pt')  # Use default YOLOv8 nano model for COCO classes
 
 # Video source
 VIDEO_SOURCE = "scene 2.mp4"
+# VIDEO_SOURCE = "rtsp://admin:Admin@1234@192.168.1.2:554/h264/ch1/main/av_stream"
 # Flag to indicate that the capture should be reopened with the (possibly) new VIDEO_SOURCE
 REOPEN_VIDEO_SOURCE = False
 
@@ -294,18 +306,39 @@ PROCESS_EVERY_N_FRAMES = 5  # Process every 5th frame (was 10)
 DETECTION_INTERVAL = 0.2  # Run detection every 200ms (was 500ms)
 VIDEO_FPS = 8  # Very low FPS for performance
 
+def detect_and_track(frame):
+    # Detect all COCO classes (remove classes=[0])
+    results = yolo_model.track(frame, persist=True)
+    detections = []
+    if results and results[0].boxes.id is not None:
+        for box in results[0].boxes:
+            obj_id = int(box.id)
+            x1, y1, x2, y2 = map(int, box.xyxy[0])
+            class_id = int(box.cls)
+            class_name = yolo_model.model.names[class_id] if hasattr(yolo_model.model, "names") else str(class_id)
+            detections.append({
+                "id": obj_id,
+                "bbox": [x1, y1, x2, y2],
+                "class": class_name,  # Use class name for clarity
+                "confidence": float(box.conf)
+            })
+    return detections
+
 def video_capture_thread():
-    global latest_frame, latest_detections, latest_faces, frame_count, person_zone_times, loitering_alerts, intrusion_alerts, REOPEN_VIDEO_SOURCE, VIDEO_SOURCE
+    global latest_frame, latest_detections, latest_faces, frame_count
+    global person_zone_times, loitering_alerts, intrusion_alerts
+    global REOPEN_VIDEO_SOURCE, VIDEO_SOURCE
+
     cap = cv2.VideoCapture(VIDEO_SOURCE)
-    
+
     if not cap.isOpened():
-        print(f"Error: Could not open video source: {VIDEO_SOURCE}")
+        print(f"❌ Error: Could not open video source: {VIDEO_SOURCE}")
         return
-    
-    print(f"Successfully opened video source: {VIDEO_SOURCE}")
-    
+
+    print(f"✅ Successfully opened video source: {VIDEO_SOURCE}")
+
     last_detection_time = 0
-    
+
     while True:
         # Handle runtime source switch
         if REOPEN_VIDEO_SOURCE:
@@ -315,162 +348,160 @@ def video_capture_thread():
                 pass
             cap = cv2.VideoCapture(VIDEO_SOURCE)
             if not cap.isOpened():
-                print(f"Error: Could not open video source after switch: {VIDEO_SOURCE}")
+                print(f"❌ Error: Could not open video source after switch: {VIDEO_SOURCE}")
                 time.sleep(1)
                 continue
             REOPEN_VIDEO_SOURCE = False
 
         ret, frame = cap.read()
         if not ret or frame is None:
-            print("Failed to read frame")
+            print("⚠️ Failed to read frame")
             time.sleep(0.05)
             continue
-        
+
         frame_count += 1
         current_time = time.time()
-        
+
         # Always update video feed
         latest_frame = frame.copy()
-        
+
         # Skip most processing for performance
         if frame_count % PROCESS_EVERY_N_FRAMES != 0:
-            time.sleep(1/VIDEO_FPS)
+            time.sleep(1 / VIDEO_FPS)
             continue
-        
+
         # Only run detection occasionally
         if current_time - last_detection_time >= DETECTION_INTERVAL:
             try:
-                # Face detection
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                face_locations = face_recognition.face_locations(rgb_frame)
-                latest_faces = face_locations
-                
-                # Debug: Print face detection results
-                print(f"Faces detected: {len(face_locations)}")
-                if zone_coords:
-                    print(f"Zone active: {zone_coords}")
+                # --- Use Ultralytics YOLO for detection and tracking ---
+                results = yolo_model.track(frame, persist=True)
+                if results and len(results) > 0:
+                    annotated_frame = results[0].plot()  # Draw bounding boxes
+                    detections = []
+                    if results[0].boxes.id is not None:
+                        for box in results[0].boxes:
+                            obj_id = int(box.id)
+                            x1, y1, x2, y2 = map(int, box.xyxy[0])
+                            class_id = int(box.cls)
+                            class_name = yolo_model.model.names[class_id] if hasattr(yolo_model.model, "names") else str(class_id)
+                            detections.append({
+                                "id": obj_id,
+                                "bbox": [x1, y1, x2, y2],
+                                "class": class_name,
+                                "confidence": float(box.conf)
+                            })
+                    latest_detections = detections
+                    latest_frame = annotated_frame  # Show frame with bounding boxes
                 else:
-                    print("No zone set")
-                
-                # Object detection
-                detections = detector.detect_np(frame)
-                latest_detections = detections
-                
-                # Behavioral analysis
-                detect_theft_and_suspicious_behavior(detections, face_locations, current_time)
-                
-                # Clean up old alerts periodically
-                if frame_count % (ALERT_CLEANUP_INTERVAL * VIDEO_FPS) == 0:
-                    cleanup_old_alerts(current_time)
-                
-                # Zone detection logic
-                for (top, right, bottom, left) in face_locations:
-                    cx, cy = (left + right) // 2, (top + bottom) // 2
+                    latest_frame = frame
+
+                # --- Zone/Loitering/Intrusion logic ---
+                for det in latest_detections:
+                    x1, y1, x2, y2 = det["bbox"]
+                    obj_id = det["id"]
+                    cx, cy = (x1 + x2) // 2, (y1 + y2) // 2
                     in_zone = False
+
                     if zone_coords is not None:
-                        in_zone = (zone_coords[0] <= cx <= zone_coords[2]) and (zone_coords[1] <= cy <= zone_coords[3])
-                        print(f"Person at ({cx}, {cy}), Zone: {zone_coords}, In zone: {in_zone}")  # Debug print
-                    
-                    # Use face index as track_id for simplicity
-                    tid = face_locations.index((top, right, bottom, left))
-                    
+                        in_zone = (
+                            zone_coords[0] <= cx <= zone_coords[2]
+                            and zone_coords[1] <= cy <= zone_coords[3]
+                        )
+                        print(f"{det['class'].upper()} {obj_id} at ({cx},{cy}), Zone: {zone_coords}, In zone: {in_zone}")
+
                     if in_zone:
-                        if tid not in person_zone_times:
-                            person_zone_times[tid] = current_time
-                            intrusion_alerts.append({'track_id': tid, 'entry_time': current_time})
-                            print(f"INTRUSION ALERT: Person {tid} entered zone!")  # Debug print
-                            
+                        if obj_id not in person_zone_times:
+                            person_zone_times[obj_id] = current_time
+                            intrusion_alerts.append(
+                                {"track_id": obj_id, "entry_time": current_time}
+                            )
+                            print(f"🚨 INTRUSION ALERT: {det['class'].upper()} {obj_id} entered zone!")
+
                             # Save to MongoDB if available
                             if MONGODB_AVAILABLE:
                                 try:
-                                    mongo_manager.save_intrusion_alert(tid, current_time)
+                                    mongo_manager.save_intrusion_alert(obj_id, current_time)
                                 except Exception as e:
                                     print(f"MongoDB save error: {e}")
                         else:
-                            duration = current_time - person_zone_times[tid]
-                            if duration > LOITER_THRESHOLD and not any(a['track_id'] == tid for a in loitering_alerts):
-                                loitering_alerts.append({'track_id': tid, 'entry_time': person_zone_times[tid], 'duration': duration})
-                                print(f"LOITERING ALERT: Person {tid} has been in zone for {duration:.1f}s!")  # Debug print
-                                # Capture snapshot if loitering alert is new
-                                if not any(s['track_id'] == tid for s in loitering_snapshots):
-                                    snapshot_path = capture_loitering_snapshot(frame, tid, duration)
-                                    loitering_snapshots.append({'track_id': tid, 'snapshot_path': snapshot_path})
-                                    
-                                    # Save to MongoDB if available
-                                    if MONGODB_AVAILABLE:
-                                        try:
-                                            mongo_manager.save_loitering_alert(tid, person_zone_times[tid], duration, snapshot_path)
-                                            mongo_manager.save_snapshot_metadata(tid, snapshot_path)
-                                        except Exception as e:
-                                            print(f"MongoDB save error: {e}")
+                            duration = current_time - person_zone_times[obj_id]
+                            if duration > LOITER_THRESHOLD and not any(
+                                a["track_id"] == obj_id for a in loitering_alerts
+                            ):
+                                loitering_alerts.append(
+                                    {
+                                        "track_id": obj_id,
+                                        "entry_time": person_zone_times[obj_id],
+                                        "duration": duration,
+                                    }
+                                )
+                                print(f"⏱️ LOITERING ALERT: {det['class'].upper()} {obj_id} has been in zone for {duration:.1f}s!")
+
+                                # Capture snapshot
+                                snapshot_path = capture_loitering_snapshot(frame, obj_id, duration)
+                                loitering_snapshots.append(
+                                    {"track_id": obj_id, "snapshot_path": snapshot_path}
+                                )
+
+                                if MONGODB_AVAILABLE:
+                                    try:
+                                        mongo_manager.save_loitering_alert(
+                                            obj_id, person_zone_times[obj_id], duration, snapshot_path
+                                        )
+                                        mongo_manager.save_snapshot_metadata(obj_id, snapshot_path)
+                                    except Exception as e:
+                                        print(f"MongoDB save error: {e}")
                     else:
-                        if tid in person_zone_times:
-                            del person_zone_times[tid]
-                            print(f"Person {tid} left zone")  # Debug print
-                
-                # Draw object boxes
-                for det in detections:
-                    x1, y1, x2, y2 = map(int, det["bbox"])
-                    label = f"{det['class']} {det['confidence']:.2f}"
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                    cv2.putText(frame, label, (x1, y1 - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                
-                # Draw face boxes
-                for (top, right, bottom, left) in face_locations:
-                    cv2.rectangle(frame, (left, top), (right, bottom), (255, 0, 0), 2)
-                    cv2.putText(frame, "Person", (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
-                
-                # Draw zone
-                if zone_coords is not None:
-                    cv2.rectangle(frame, (zone_coords[0], zone_coords[1]), (zone_coords[2], zone_coords[3]), (0, 0, 255), 2)
-                    cv2.putText(frame, "RESTRICTED ZONE", (zone_coords[0], zone_coords[1] - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                
-                # Draw behavioral alerts on video with fade-out effect
-                y_offset = 30
-                for alert in theft_alerts[-3:]:  # Show last 3 alerts
-                    time_elapsed = current_time - alert['timestamp']
-                    time_remaining = ALERT_DISPLAY_TIMEOUT - time_elapsed
-                    
-                    if time_remaining > 0:
-                        # Calculate opacity based on time remaining (fade out effect)
-                        opacity = min(1.0, time_remaining / 2.0)  # Start fading after 2 seconds
-                        
-                        if alert['severity'] == 'CRITICAL':
-                            color = (0, 0, int(255 * opacity))  # Red with opacity
-                            cv2.putText(frame, f"🚨 {alert['type']}", (10, y_offset), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 3)
-                            y_offset += 40
-                        elif alert['severity'] == 'HIGH':
-                            color = (0, int(165 * opacity), int(255 * opacity))  # Orange with opacity
-                            cv2.putText(frame, f"⚠️ {alert['type']}", (10, y_offset), 
-                                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-                            y_offset += 35
-                
-                # Draw suspicious behavior alerts
-                for alert in suspicious_behavior_alerts[-2:]:  # Show last 2 alerts
-                    time_elapsed = current_time - alert['timestamp']
-                    time_remaining = ALERT_DISPLAY_TIMEOUT - time_elapsed
-                    
-                    if time_remaining > 0:
-                        opacity = min(1.0, time_remaining / 2.0)
-                        color = (0, int(255 * opacity), int(255 * opacity))  # Yellow with opacity
-                        cv2.putText(frame, f"👥 {alert['type']}", (10, y_offset), 
-                                   cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
-                        y_offset += 30
-                
+                        if obj_id in person_zone_times:
+                            del person_zone_times[obj_id]
+                            print(f"{det['class'].upper()} {obj_id} left zone")
+
+                # Behavioral analysis
+                detect_theft_and_suspicious_behavior(latest_detections, [], current_time)
+
+                # Clean up old alerts periodically
+                if frame_count % (ALERT_CLEANUP_INTERVAL * VIDEO_FPS) == 0:
+                    cleanup_old_alerts(current_time)
+
                 last_detection_time = current_time
-                latest_frame = frame.copy()
-                
+
             except Exception as e:
-                print(f"Detection error: {e}")
-        
-        time.sleep(1/VIDEO_FPS)
-    
+                print(f"❌ Detection error: {e}")
+
+        # --- Face recognition ---
+        rgb_frame = frame[:, :, ::-1]  # Convert BGR to RGB for face_recognition
+
+        face_locations = face_recognition.face_locations(rgb_frame)
+        face_encodings = face_recognition.face_encodings(rgb_frame, face_locations)
+
+        recognized_faces = []
+        for (top, right, bottom, left), face_encoding in zip(face_locations, face_encodings):
+            matches = face_recognition.compare_faces(known_face_encodings, face_encoding)
+            name = "Unknown"
+            if True in matches:
+                first_match_index = matches.index(True)
+                name = known_face_names[first_match_index]
+                # Optionally, log or alert recognized face
+                print(f"Recognized: {name}")
+                recognized_faces.append(name)
+                # Optionally, save to MongoDB
+                if MONGODB_AVAILABLE:
+                    mongo_manager.save_recognized_face(name, face_encoding.tolist())
+            # Draw bounding box and label
+            cv2.rectangle(frame, (left, top), (right, bottom), (0, 255, 0), 2)
+            cv2.putText(frame, name, (left, top - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+
+        latest_faces = recognized_faces  # Update latest recognized faces
+
+        time.sleep(1 / VIDEO_FPS)
+
     cap.release()
 
 # Start video capture in background
-t = threading.Thread(target=video_capture_thread, daemon=True)
-t.start()
+@app.on_event("startup")
+def start_video_thread():
+    t = threading.Thread(target=video_capture_thread, daemon=True)
+    t.start()
 
 def mjpeg_generator():
     global latest_frame
@@ -494,6 +525,7 @@ def latest_detections_api():
 def get_faces():
     return {"faces": latest_faces}
 
+
 @app.get("/performance")
 def get_performance():
     return {
@@ -502,12 +534,22 @@ def get_performance():
         "process_every_n": PROCESS_EVERY_N_FRAMES,
         "detection_interval": DETECTION_INTERVAL,
         "faces_detected": len(latest_faces),
+        "recognized_faces": [f["name"] for f in latest_faces],
         "objects_detected": len(latest_detections),
         "zone_active": zone_coords is not None,
         "people_in_zone": len(person_zone_times),
         "loitering_alerts": len(loitering_alerts),
         "intrusion_alerts": len(intrusion_alerts),
-        "theft_alerts": len(theft_alerts),
-        "tracked_objects": len(tracked_objects),
-        "mongodb_available": MONGODB_AVAILABLE
-    } 
+        "theft_alerts": len(theft_alerts)
+    }
+
+# API endpoint to get recent recognized faces
+@app.get("/recognized_faces")
+def get_recognized_faces(limit: int = 50):
+    if MONGODB_AVAILABLE:
+        faces = mongo_manager.get_recent_recognized_faces(limit)
+        for f in faces:
+            f["encoding"] = str(f["encoding"])
+        return {"recognized_faces": faces}
+    else:
+        return {"recognized_faces": []}

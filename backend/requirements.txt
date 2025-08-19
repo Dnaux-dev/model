@@ -6,3 +6,4 @@ ultralytics
 opencv-python
 pillow 
 deep_sort_realtime 
+lap
